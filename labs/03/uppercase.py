@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
+# af8db633-f883-4de7-9601-86d662eea9b5
+# 1c06b483-0fdf-43cd-8cb8-35e1733f86d0
+# 2511b176-6602-4c94-9503-82c269d696ff
+
 import argparse
 import os
+from pyexpat import model
 
 import torch
 import torchmetrics
@@ -13,12 +18,12 @@ from npfl138.datasets.uppercase_data import UppercaseData
 # `alphabet_size`, `batch_size`, `epochs`, and `window`.
 # Also, you can set the number of threads to 0 to use all your CPU cores.
 parser = argparse.ArgumentParser()
-parser.add_argument("--alphabet_size", default=..., type=int, help="If given, use this many most frequent chars.")
-parser.add_argument("--batch_size", default=..., type=int, help="Batch size.")
-parser.add_argument("--epochs", default=..., type=int, help="Number of epochs.")
+parser.add_argument("--alphabet_size", default=100, type=int, help="If given, use this many most frequent chars.")
+parser.add_argument("--batch_size", default=2048, type=int, help="Batch size.")
+parser.add_argument("--epochs", default=10, type=int, help="Number of epochs.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
-parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
-parser.add_argument("--window", default=..., type=int, help="Window size to use.")
+parser.add_argument("--threads", default=0, type=int, help="Maximum number of threads to use.")
+parser.add_argument("--window", default=5, type=int, help="Window size to use.")
 
 
 class Dataset(torch.utils.data.Dataset):
@@ -60,12 +65,25 @@ class Model(npfl138.TrainableModule):
         #   and then concatenate the one-hot encodings of the window characters.
         # - Alternatively, you can experiment with `torch.nn.Embedding`s (an
         #   efficient implementation of one-hot encoding followed by a Dense layer)
-        #   and flattening afterwards.
-        ...
+        #   and flattening afterwards, or suitably using `torch.nn.EmbeddingBag`.
+        
+        window_size = 2 * args.window + 1
+        embedding_dim = 32
+        self._model = torch.nn.Sequential(
+            torch.nn.Embedding(args.alphabet_size, embedding_dim),
+            torch.nn.Flatten(),
+            torch.nn.Linear(window_size * embedding_dim, 128),
+            torch.nn.ReLU(),
+            torch.nn.Dropout(0.2),
+            torch.nn.Linear(128, 64),
+            torch.nn.ReLU(),
+            torch.nn.Linear(64, 2),
+        )
+
 
     def forward(self, windows: torch.Tensor) -> torch.Tensor:
         # TODO: Implement the forward pass.
-        ...
+        return self._model(windows)
 
 
 def main(args: argparse.Namespace) -> None:
@@ -74,7 +92,7 @@ def main(args: argparse.Namespace) -> None:
     npfl138.global_keras_initializers()
 
     # Create a suitable logdir for the logs and the predictions.
-    logdir = npfl138.format_logdir("logs/{file-}{timestamp}{-config}", **vars(args))
+    args.logdir = npfl138.format_logdir("logs/{file-}{timestamp}{-config}", **vars(args))
 
     # Load the data and create windows of integral character indices and integral labels.
     uppercase_data = UppercaseData(args.window, args.alphabet_size)
@@ -86,19 +104,30 @@ def main(args: argparse.Namespace) -> None:
 
     # TODO: Implement a suitable model, optionally including regularization, select
     # good hyperparameters, and train the model.
-    model = ...
-
+    model = Model(args)
+    model.configure(
+        optimizer=torch.optim.Adam(model.parameters(), lr=1e-3),
+        loss=torch.nn.CrossEntropyLoss(),
+        metrics={
+            "accuracy": torchmetrics.Accuracy(task="multiclass", num_classes=2),
+        },
+    )
+    model.fit(train, args.epochs)    
     # TODO: Generate correctly capitalized test set and write the result to `predictions_file`,
-    # which is by default `uppercase_test.txt` in the `logdir` directory).
-    os.makedirs(logdir, exist_ok=True)
-    with open(os.path.join(logdir, "uppercase_test.txt"), "w", encoding="utf-8") as predictions_file:
+    # which is by default `uppercase_test.txt` in the `args.logdir` directory).
+    os.makedirs(args.logdir, exist_ok=True)
+    with open(os.path.join(args.logdir, "uppercase_test.txt"), "w", encoding="utf-8") as predictions_file:
         # We start by generating the network test set predictions; if you modified the `test` dataloader
         # or your model does not process the dataset windows, you might need to adjust the following line.
         predictions = model.predict(test, data_with_labels=True)
 
         # Now you need to utilize the network predictions and the unannotated test data (lowercased text)
         # available in `uppercase_data.test.text` to produce capitalized text and print it to the `predictions_file`.
-        ...
+        for prediction, char in zip(predictions, uppercase_data.test.text):
+            if prediction[1] > prediction[0]:
+                predictions_file.write(char.upper())
+            else:
+                predictions_file.write(char.lower())
 
 
 if __name__ == "__main__":
